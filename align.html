@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kitchen AR Align</title>
+<style>
+  :root { --bg:#F3F1EA; --ink:#23281F; --muted:#6B7266; --sage:#8F9C84; --sage-d:#6E7B63; --oak:#B98048; --card:#FFFFFF; --line:#D9D4C7; }
+  * { box-sizing:border-box }
+  html, body { margin:0 }
+  body { background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body.in-ar { background:transparent }
+  body.in-ar #intro { display:none }
+  canvas { display:none }
+
+  /* ---------- intro page ---------- */
+  #intro { max-width:560px; margin:0 auto; padding:max(14px, env(safe-area-inset-top)) 16px 32px }
+  h1 { font-size:22px; margin:6px 0 4px }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 14px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px }
+  .card h2 { font-size:15px; margin:0 0 8px }
+  .seg { display:flex; gap:6px }
+  .seg button { flex:1; font:600 15px system-ui, sans-serif; padding:10px 6px; border-radius:10px; border:2px solid var(--sage); background:var(--card); color:var(--ink) }
+  .seg button[aria-pressed="true"] { background:var(--sage); color:#fff }
+  .field { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:14px; margin-top:10px }
+  .field input { width:84px; font:15px system-ui, sans-serif; padding:6px 8px; border:1px solid var(--line); border-radius:8px }
+  ol { margin:0; padding-left:20px; font-size:14px }
+  ol li { margin-bottom:6px }
+  #start { width:100%; background:var(--oak); color:#fff; border:0; font:700 18px system-ui, sans-serif; padding:16px; border-radius:999px; margin:6px 0 10px }
+  #start:disabled { opacity:.5 }
+  #support { font-size:14px; color:var(--muted); text-align:center; min-height:20px }
+  a { color:var(--sage-d) }
+
+  /* ---------- AR overlay ---------- */
+  #overlay { position:fixed; inset:0; pointer-events:none; font:15px/1.35 system-ui, sans-serif; color:#fff }
+  #overlay[hidden] { display:none }
+  #top { pointer-events:auto; position:absolute; left:10px; right:10px; top:max(10px, env(safe-area-inset-top));
+         background:rgba(20,24,18,.72); border-radius:12px; padding:10px 12px; backdrop-filter:blur(6px) }
+  #instr { font-weight:600 }
+  #readout { font-size:13px; color:#DDE3D5; margin-top:4px; font-variant-numeric:tabular-nums }
+  #cross { position:absolute; left:50%; top:50%; width:44px; height:44px; transform:translate(-50%,-50%) }
+  #cross::before, #cross::after { content:""; position:absolute; background:#fff; box-shadow:0 0 2px #000 }
+  #cross::before { left:21px; top:0; width:2px; height:44px }
+  #cross::after { top:21px; left:0; height:2px; width:44px }
+  #cross.bad::before, #cross.bad::after { background:#F2A36B }
+  #panel { pointer-events:auto; position:absolute; left:8px; right:8px; bottom:max(8px, env(safe-area-inset-bottom));
+           background:rgba(20,24,18,.78); border-radius:14px; padding:10px; backdrop-filter:blur(6px) }
+  #panel button { font:600 15px system-ui, sans-serif; color:#fff; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.25);
+                  border-radius:10px; min-height:44px; padding:6px 8px }
+  #panel button:active { background:rgba(255,255,255,.32) }
+  #panel button.primary { background:var(--oak); border-color:var(--oak); font-size:17px }
+  #panel button[aria-pressed="true"] { background:var(--sage); border-color:var(--sage) }
+  .row { display:flex; gap:6px; margin-top:6px }
+  .row > * { flex:1 }
+  .pad { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; margin-top:6px }
+  .pad button small { display:block; font-weight:400; font-size:11px; opacity:.85 }
+  #legend { font-size:13px; text-align:center; color:#DDE3D5; margin-top:6px }
+  #legend .sw { display:inline-block; width:12px; height:12px; border-radius:3px; vertical-align:-1px; margin:0 3px 0 8px }
+  #panel button:disabled { opacity:.35 }
+  #offs { font-size:13px; text-align:center; color:#DDE3D5; margin-top:6px; font-variant-numeric:tabular-nums }
+  .slider { display:flex; align-items:center; gap:8px; font-size:13px; margin-top:6px }
+  .slider input { flex:1 }
+  #toast { position:absolute; left:50%; top:46%; transform:translate(-50%,-140%); background:rgba(0,0,0,.8); padding:8px 12px; border-radius:10px;
+           font-size:14px; max-width:86%; text-align:center; opacity:0; transition:opacity .25s }
+  #toast.show { opacity:1 }
+  #showPanel { pointer-events:auto; position:absolute; right:10px; bottom:max(10px, env(safe-area-inset-bottom)); font:600 15px system-ui, sans-serif;
+               color:#fff; background:rgba(20,24,18,.78); border:1px solid rgba(255,255,255,.3); border-radius:999px; padding:12px 16px }
+  [hidden] { display:none !important }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+
+<main id="intro">
+  <h1>Kitchen AR: precise placement</h1>
+  <p class="sub">Locks the design to your real floor and walls using two marked points, then lets you fine-tune in ¼″ steps.</p>
+
+  <div class="card">
+    <h2>Design</h2>
+    <div class="seg" id="introLayouts"></div>
+  </div>
+
+  <div class="card">
+    <h2>How you'll line it up</h2>
+    <ol>
+      <li>Roll the coffee cart out of the corner by the stairs door.</li>
+      <li><b>Mark 1:</b> the floor in the <b>SW corner</b>, where the stairs-door wall (Door B) meets the entry-door wall (Door A). Aim the crosshair right where the two baseboards meet.</li>
+      <li><b>Mark 2:</b> the floor at the foot of one of those walls, as far from the corner as you can. Choose which wall:</li>
+    </ol>
+    <div class="seg" id="refSeg" style="margin-top:8px">
+      <button data-ref="west">Entry wall<br><small>toward Door A</small></button>
+      <button data-ref="south">Stairs wall<br><small>toward Door B</small></button>
+    </div>
+    <div class="field">
+      <label for="bb">Baseboard thickness (inches)</label>
+      <input id="bb" type="number" inputmode="decimal" step="0.125" min="0" max="2">
+    </div>
+  </div>
+
+  <button id="start" disabled>Loading models…</button>
+  <div id="support"></div>
+  <p class="sub" style="margin-top:14px">Tip: move the phone slowly around the room for a few seconds before marking, so it maps the floor well. Back to the <a href="index.html">quick viewer</a>.</p>
+</main>
+
+<div id="overlay" hidden>
+  <div id="top">
+    <div id="instr"></div>
+    <div id="readout"></div>
+  </div>
+  <div id="cross"></div>
+  <div id="toast"></div>
+
+  <div id="panel">
+    <!-- marking phase -->
+    <div id="markUI">
+      <button id="markBtn" class="primary" style="width:100%">Mark corner</button>
+      <div class="row">
+        <button id="undoBtn">Undo</button>
+        <button id="exitBtn1">Exit AR</button>
+      </div>
+    </div>
+
+    <!-- placed phase -->
+    <div id="tuneUI" hidden>
+      <div class="row" id="arLayouts"></div>
+      <div class="pad">
+        <button data-n="rot" data-d="1">⟲<small>turn left</small></button>
+        <button data-n="n" data-d="1">↑ N<small>to dining</small></button>
+        <button data-n="rot" data-d="-1">⟳<small>turn right</small></button>
+        <button data-n="up" data-d="1">Up<small>height</small></button>
+        <button data-n="e" data-d="-1">← W<small>to entry</small></button>
+        <button id="stepBtn">1″<small>step</small></button>
+        <button data-n="e" data-d="1">E →<small>to window</small></button>
+        <button data-n="up" data-d="-1">Down<small>height</small></button>
+        <span></span>
+        <button data-n="n" data-d="-1">↓ S<small>to stairs</small></button>
+        <span></span>
+        <button id="zeroBtn">Reset<small>nudges</small></button>
+      </div>
+      <div id="offs"></div>
+      <div class="row">
+        <button id="changesBtn">Changes only</button>
+      </div>
+      <div id="legend" hidden><span class="sw" style="background:#7FB069"></span>new wall <span class="sw" style="background:#E0533D"></span>wall / built-in removed</div>
+      <div class="row">
+        <button id="wallsBtn">Walls: ghost</button>
+        <button id="floorBtn">Floor</button>
+        <button id="diningBtn">Dining set</button>
+      </div>
+      <div class="slider"><span>See-through</span><input id="opacity" type="range" min="0.2" max="1" step="0.05"><span>Solid</span></div>
+      <div class="row">
+        <button id="remarkBtn">Re-mark</button>
+        <button id="hideBtn">Hide controls</button>
+        <button id="exitBtn2">Exit AR</button>
+      </div>
+    </div>
+  </div>
+  <button id="showPanel" hidden>Controls</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+/* ---------- model facts (from the GLBs: meters, Y up, origin = kitchen floor center, -Z = north, +X = east) ---------- */
+const IN = 0.0254;
+const WALL_W = -2.377, WALL_E = 2.387, WALL_N = -1.646, WALL_S = 1.640;   // interior wall faces
+const REFS = {                       // direction from the SW corner along the chosen wall, in model axes
+  west:  new THREE.Vector3(0, 0, -1), // along the entry (Door A) wall, toward north
+  south: new THREE.Vector3(1, 0, 0)   // along the stairs (Door B) wall, toward east
+};
+const LAYOUTS = {
+  R4: 'Range on the stairs wall, sink peninsula with raised bar',
+  R2: 'Sink island, wall to living room opened',
+  R3: 'Sink peninsula with raised bar, range on window wall'
+};
+const PARTS = { walls: ['wall'], floor: ['floor'], dining: ['table', 'chair'] };
+// Wall changes vs. today's house, per layout, as boxes [x0,y0,z0,x1,y1,z1] in model meters.
+// "Today" comes from the 10.26 scan (Door C, the floor-to-ceiling built-in, Door A, full-width window), snapped to the models' wall lines.
+const CHANGES = {"R4":{"add":[[-2.539,0.0,-0.722,-2.377,2.198,0.03]],"remove":[[-2.539,0.0,0.128,-2.377,2.198,0.881],[-2.377,0.0,-1.35,-1.134,2.426,-0.722],[-1.134,0.0,-1.786,-1.04,2.134,-1.646],[-1.04,2.051,-1.786,1.777,2.134,-1.646],[-0.24,0.0,-1.786,1.777,2.051,-1.646]]},"R2":{"add":[[2.387,1.018,-0.808,2.551,2.036,-0.457]],"remove":[[-2.377,0.0,-1.35,-1.134,2.426,-0.722],[-1.134,0.0,-1.786,-1.04,2.134,-1.646],[-1.04,2.051,-1.786,1.777,2.134,-1.646],[-0.24,0.0,-1.786,1.777,2.051,-1.646]]},"R3":{"add":[[2.387,1.018,-0.808,2.551,2.036,-0.457]],"remove":[[-2.377,0.0,-1.35,-1.134,2.426,-0.722],[-1.134,0.0,-1.786,-1.04,2.134,-1.646],[-1.04,2.051,-1.786,1.777,2.134,-1.646],[-0.24,0.0,-1.786,1.777,2.051,-1.646]]}};
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('kar_' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('kar_' + k, JSON.stringify(v)); } catch (e) {} }
+};
+
+const STEPS = [ { len: 0.25, rot: 0.1, label: '¼″' }, { len: 1, rot: 0.25, label: '1″' }, { len: 4, rot: 1, label: '4″' } ];
+const S = {
+  layout: store.get('layout', 'R4'),
+  ref: store.get('ref', 'west'),
+  bb: store.get('bb', 0.5),
+  opacity: store.get('opacity', 0.85),
+  walls: store.get('walls', 'ghost'),     // off | ghost | solid
+  floor: store.get('floor', false),
+  dining: store.get('dining', false),
+  changes: store.get('changes', false),   // "changes only": hide existing walls/floor/dining, show new (green) and removed (red) walls
+  stepIdx: store.get('stepIdx', 1),
+  phase: 'corner',                        // corner | wall | placed
+  p1: null, floorY: null,
+  off: { e: 0, n: 0, up: 0, rot: 0 }      // inches / degrees
+};
+if (!LAYOUTS[S.layout]) S.layout = 'R4';
+
+/* ---------- three.js ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 50);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8577, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.3); sun.position.set(1, 3, 2); scene.add(sun);
+
+// placed (world pose of the corner, follows the AR anchor) -> nudge (user fine-tuning) -> modelRoot (shifts model so the corner is at 0)
+const placed = new THREE.Group(); placed.matrixAutoUpdate = false; placed.visible = false; scene.add(placed);
+const nudge = new THREE.Group(); placed.add(nudge);
+const modelRoot = new THREE.Group(); nudge.add(modelRoot);
+
+const reticle = new THREE.Mesh(new THREE.RingGeometry(0.03, 0.045, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+reticle.add(new THREE.Mesh(new THREE.CircleGeometry(0.005, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff })));
+reticle.visible = false; scene.add(reticle);
+
+function marker(color) {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 12), new THREE.MeshBasicMaterial({ color })));
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.003, 0.15, 8), new THREE.MeshBasicMaterial({ color }));
+  pole.position.y = 0.075; g.add(pole);
+  g.visible = false; scene.add(g); return g;
+}
+const mark1 = marker(0xF2A36B), mark2 = marker(0x8FD3FF);
+
+/* ---------- models ---------- */
+const models = {};
+function partOf(o, root) {
+  for (let n = o; n && n !== root; n = n.parent)
+    for (const [p, names] of Object.entries(PARTS)) if (names.includes(n.name)) return p;
+  return 'kitchen';
+}
+async function loadModels() {
+  const loader = new GLTFLoader();
+  await Promise.all(Object.keys(LAYOUTS).map(k => loader.loadAsync(`${k}_kitchen_AR_fullsize.glb`).then(g => {
+    const root = g.scene;
+    root.traverse(o => {
+      if (!o.isMesh) return;
+      o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
+      o.userData.part = partOf(o, root);
+    });
+    modelRoot.add(root); models[k] = root;
+  })));
+  buildChangeLayers();
+  applyLook();
+}
+
+const changeLayers = {};
+function buildChangeLayers() {
+  const addMat = new THREE.MeshStandardMaterial({ color: 0x7FB069, roughness: 0.8, transparent: true, opacity: 0.85 });
+  const remMat = new THREE.MeshBasicMaterial({ color: 0xE0533D, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide });
+  const remEdge = new THREE.LineBasicMaterial({ color: 0xE0533D });
+  const addEdge = new THREE.LineBasicMaterial({ color: 0x4E7A3A });
+  for (const [k, c] of Object.entries(CHANGES)) {
+    const g = new THREE.Group(); g.visible = false;
+    for (const [list, mat, edge] of [[c.add, addMat, addEdge], [c.remove, remMat, remEdge]]) {
+      for (const [x0, y0, z0, x1, y1, z1] of list) {
+        const geo = new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0);
+        const m = new THREE.Mesh(geo, mat); m.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+        m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), edge));
+        g.add(m);
+      }
+    }
+    modelRoot.add(g); changeLayers[k] = g;
+  }
+}
+
+function applyLook() {
+  for (const [k, g] of Object.entries(changeLayers)) g.visible = S.changes && k === S.layout;
+  for (const [k, root] of Object.entries(models)) {
+    root.visible = k === S.layout;
+    root.traverse(o => {
+      if (!o.isMesh) return;
+      const part = o.userData.part;
+      let vis = true, op = S.opacity;
+      if (part === 'walls') { vis = !S.changes && S.walls !== 'off'; op = S.walls === 'ghost' ? 0.22 : 0.92; }
+      else if (part === 'floor') { vis = S.floor; op = 0.5; }
+      else if (part === 'dining') { vis = !S.changes && S.dining; }
+      o.visible = vis;
+      for (const m of (Array.isArray(o.material) ? o.material : [o.material])) {
+        const t = op < 0.999;
+        if (m.transparent !== t) m.needsUpdate = true;
+        m.transparent = t; m.opacity = op; m.depthWrite = !t;
+      }
+    });
+  }
+}
+
+/* ---------- registration ---------- */
+const baseMatrix = new THREE.Matrix4();
+let anchor = null, anchorRegInv = null;
+let hitSource = null, lastHit = null, lastHitResult = null, nonFloor = false;
+let sampling = null;
+
+function cornerModel() {   // where the marked point sits in model coords: baseboard face, not drywall
+  const bb = Math.max(0, Number(S.bb) || 0) * IN;
+  return new THREE.Vector3(WALL_W + bb, 0, WALL_S - bb);
+}
+
+function resetRegistration() {
+  S.phase = 'corner'; S.p1 = null; S.floorY = null;
+  placed.visible = false; mark1.visible = mark2.visible = false;
+  if (anchor) { try { anchor.delete(); } catch (e) {} anchor = null; }
+  anchorRegInv = null; sampling = null;
+  refreshUI();
+}
+
+function startMark() {
+  if (!lastHit) { toast(nonFloor ? 'That looks like a counter or wall. Aim lower, at the floor.' : 'No floor found yet. Sweep the phone slowly over the floor.'); return; }
+  sampling = { pts: [], result: null };
+  $('markBtn').disabled = true; $('markBtn').textContent = 'Hold steady…';
+}
+
+function finishMark() {
+  const avg = new THREE.Vector3();
+  sampling.pts.forEach(p => avg.add(p)); avg.divideScalar(sampling.pts.length);
+  const result = sampling.result; sampling = null; $('markBtn').disabled = false;
+
+  if (S.phase === 'corner') {
+    S.p1 = avg; S.floorY = avg.y;
+    mark1.position.copy(avg); mark1.visible = true;
+    if (result && result.createAnchor) {
+      result.createAnchor().then(a => { if (anchor) { try { anchor.delete(); } catch (e) {} } anchor = a; anchorRegInv = null; }).catch(() => {});
+    }
+    S.phase = 'wall';
+  } else if (S.phase === 'wall') {
+    avg.y = S.floorY;
+    const d = new THREE.Vector3().subVectors(avg, S.p1); d.y = 0;
+    if (d.length() < 0.6) { toast('Too close to the corner. Mark a point at least 2 ft along the wall.'); refreshUI(); return; }
+    d.normalize();
+    mark2.position.copy(avg); mark2.visible = true;
+    const dm = REFS[S.ref];
+    const yaw = Math.atan2(d.x, d.z) - Math.atan2(dm.x, dm.z);
+    baseMatrix.compose(new THREE.Vector3(S.p1.x, S.floorY, S.p1.z),
+                       new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw),
+                       new THREE.Vector3(1, 1, 1));
+    modelRoot.position.copy(cornerModel()).negate();
+    anchorRegInv = null;
+    S.off = { e: 0, n: 0, up: 0, rot: 0 }; applyNudge();
+    placed.matrix.copy(baseMatrix); placed.matrixWorldNeedsUpdate = true;
+    placed.visible = true; S.phase = 'placed';
+    toast('Placed. Check the far walls and nudge if needed.');
+  }
+  refreshUI();
+}
+
+function applyNudge() {
+  nudge.position.set(S.off.e * IN, S.off.up * IN, -S.off.n * IN);
+  nudge.rotation.set(0, THREE.MathUtils.degToRad(S.off.rot), 0);
+  const f = (v, u) => (v > 0 ? '+' : v < 0 ? '−' : '') + fmtNum(Math.abs(v)) + u;
+  $('offs').textContent = `E ${f(S.off.e, '″')} · N ${f(S.off.n, '″')} · height ${f(S.off.up, '″')} · turn ${f(S.off.rot, '°')}`;
+}
+
+/* ---------- per-frame ---------- */
+function updateHit(frame, ref) {
+  lastHit = null; lastHitResult = null; nonFloor = false; reticle.visible = false;
+  if (!hitSource) return;
+  const vp = frame.getViewerPose(ref);
+  const viewerY = vp ? vp.transform.position.y : null;
+  const m = new THREE.Matrix4(), up = new THREE.Vector3();
+  for (const r of frame.getHitTestResults(hitSource)) {
+    const p = r.getPose(ref); if (!p) continue;
+    m.fromArray(p.transform.matrix);
+    up.setFromMatrixColumn(m, 1);
+    const pos = new THREE.Vector3().setFromMatrixPosition(m);
+    const horizontal = up.y > 0.9;
+    const ok = S.floorY !== null
+      ? horizontal && Math.abs(pos.y - S.floorY) < 0.1
+      : horizontal && viewerY !== null && viewerY - pos.y > 0.45;
+    if (!ok) { nonFloor = true; continue; }
+    if (S.floorY !== null) pos.y = S.floorY;     // floor lock
+    lastHit = pos; lastHitResult = r; nonFloor = false;
+    reticle.position.set(pos.x, pos.y + 0.002, pos.z); reticle.visible = true;
+    break;
+  }
+  if (sampling && lastHit) {
+    sampling.pts.push(lastHit.clone()); sampling.result = lastHitResult;
+    if (sampling.pts.length >= 15) finishMark();
+  }
+}
+
+function updatePlaced(frame, ref) {
+  if (!anchor || !frame.trackedAnchors || !frame.trackedAnchors.has(anchor)) return;
+  const ap = frame.getPose(anchor.anchorSpace, ref); if (!ap) return;
+  const A = new THREE.Matrix4().fromArray(ap.transform.matrix);
+  if (!anchorRegInv) { anchorRegInv = A.clone().invert(); return; }
+  placed.matrix.copy(A).multiply(anchorRegInv).multiply(baseMatrix);   // follow ARCore's drift corrections
+  placed.matrixWorldNeedsUpdate = true;
+  mark1.position.copy(S.p1).applyMatrix4(new THREE.Matrix4().copy(A).multiply(anchorRegInv));
+}
+
+let lastUi = 0;
+renderer.setAnimationLoop((t, frame) => {
+  if (!frame) return;
+  const ref = renderer.xr.getReferenceSpace();
+  updateHit(frame, ref);
+  if (S.phase === 'placed') updatePlaced(frame, ref);
+  renderer.render(scene, camera);
+  if (t - lastUi > 150) { lastUi = t; updateReadout(); }
+});
+
+/* ---------- readouts ---------- */
+function fmtNum(v) { const r = Math.round(v * 100) / 100; return String(r); }
+function ftIn(m) {
+  let inches = Math.round((m / IN) * 4) / 4;
+  const neg = inches < 0; inches = Math.abs(inches);
+  const ft = Math.floor(inches / 12); let rem = inches - ft * 12;
+  const whole = Math.floor(rem), frac = rem - whole;
+  const fr = frac === 0.25 ? '¼' : frac === 0.5 ? '½' : frac === 0.75 ? '¾' : '';
+  return `${neg ? '−' : ''}${ft}′-${whole}${fr}″`;
+}
+function updateReadout() {
+  const cross = $('cross');
+  cross.classList.toggle('bad', !lastHit);
+  let txt = '';
+  if (!lastHit) txt = nonFloor ? 'Crosshair is on a counter or wall. Aim at the floor.' : 'Looking for the floor… sweep slowly.';
+  else if (S.phase === 'wall' && S.p1) {
+    const d = new THREE.Vector3().subVectors(lastHit, S.p1); d.y = 0;
+    txt = `${ftIn(d.length())} from the corner mark${d.length() < 0.6 ? ' (go farther)' : ''}`;
+  } else if (S.phase === 'placed') {
+    scene.updateMatrixWorld();
+    const local = modelRoot.worldToLocal(lastHit.clone());
+    txt = `Crosshair on plan: ${ftIn(local.x - WALL_W)} from entry wall · ${ftIn(local.z - WALL_N)} from dining wall`;
+  } else txt = 'Floor found ✓';
+  $('readout').textContent = txt;
+}
+
+/* ---------- UI ---------- */
+const wallName = () => S.ref === 'west' ? 'entry wall (Door A side)' : 'stairs wall (Door B side)';
+function refreshUI() {
+  const placedNow = S.phase === 'placed';
+  $('markUI').hidden = placedNow; $('tuneUI').hidden = !placedNow;
+  if (S.phase === 'corner') {
+    $('instr').textContent = 'Mark 1 of 2: put the crosshair on the floor exactly where the two baseboards meet in the corner by the stairs door.';
+    $('markBtn').textContent = 'Mark corner'; $('undoBtn').disabled = true;
+  } else if (S.phase === 'wall') {
+    $('instr').textContent = `Mark 2 of 2: put the crosshair on the floor against the baseboard of the ${wallName()}, as far from the corner as you can.`;
+    $('markBtn').textContent = 'Mark wall point'; $('undoBtn').disabled = false;
+  } else {
+    $('instr').textContent = `${S.layout}: ${LAYOUTS[S.layout]}`;
+  }
+  $('stepBtn').firstChild.textContent = STEPS[S.stepIdx].label;
+  $('wallsBtn').textContent = 'Walls: ' + S.walls;
+  $('changesBtn').setAttribute('aria-pressed', S.changes);
+  $('legend').hidden = !S.changes;
+  ['wallsBtn', 'diningBtn'].forEach(id => $(id).disabled = S.changes);
+  $('floorBtn').setAttribute('aria-pressed', S.floor);
+  $('diningBtn').setAttribute('aria-pressed', S.dining);
+  $('opacity').value = S.opacity;
+  document.querySelectorAll('[data-layout]').forEach(b => b.setAttribute('aria-pressed', b.dataset.layout === S.layout));
+  document.querySelectorAll('#refSeg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.ref === S.ref));
+}
+
+let toastTimer;
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600); }
+
+function layoutButtons(container) {
+  for (const k of Object.keys(LAYOUTS)) {
+    const b = document.createElement('button'); b.textContent = k; b.dataset.layout = k;
+    b.addEventListener('click', () => { S.layout = k; store.set('layout', k); applyLook(); refreshUI(); });
+    container.appendChild(b);
+  }
+}
+layoutButtons($('introLayouts')); layoutButtons($('arLayouts'));
+
+document.querySelectorAll('#refSeg button').forEach(b => b.addEventListener('click', () => { S.ref = b.dataset.ref; store.set('ref', S.ref); refreshUI(); }));
+$('bb').value = S.bb;
+$('bb').addEventListener('change', e => { S.bb = Number(e.target.value) || 0; store.set('bb', S.bb); });
+
+$('markBtn').addEventListener('click', startMark);
+$('undoBtn').addEventListener('click', resetRegistration);
+$('remarkBtn').addEventListener('click', resetRegistration);
+document.querySelectorAll('.pad [data-n]').forEach(b => b.addEventListener('click', () => {
+  const st = STEPS[S.stepIdx], dir = Number(b.dataset.d), k = b.dataset.n;
+  S.off[k] = Math.round((S.off[k] + dir * (k === 'rot' ? st.rot : st.len)) * 1000) / 1000;
+  applyNudge();
+}));
+$('stepBtn').addEventListener('click', () => { S.stepIdx = (S.stepIdx + 1) % STEPS.length; store.set('stepIdx', S.stepIdx); refreshUI(); });
+$('zeroBtn').addEventListener('click', () => { S.off = { e: 0, n: 0, up: 0, rot: 0 }; applyNudge(); });
+$('wallsBtn').addEventListener('click', () => { S.walls = { off: 'ghost', ghost: 'solid', solid: 'off' }[S.walls]; store.set('walls', S.walls); applyLook(); refreshUI(); });
+$('changesBtn').addEventListener('click', () => { S.changes = !S.changes; store.set('changes', S.changes); applyLook(); refreshUI(); });
+$('floorBtn').addEventListener('click', () => { S.floor = !S.floor; store.set('floor', S.floor); applyLook(); refreshUI(); });
+$('diningBtn').addEventListener('click', () => { S.dining = !S.dining; store.set('dining', S.dining); applyLook(); refreshUI(); });
+$('opacity').addEventListener('input', e => { S.opacity = Number(e.target.value); store.set('opacity', S.opacity); applyLook(); });
+$('hideBtn').addEventListener('click', () => { $('panel').hidden = true; $('showPanel').hidden = false; });
+$('showPanel').addEventListener('click', () => { $('panel').hidden = false; $('showPanel').hidden = true; });
+['exitBtn1', 'exitBtn2'].forEach(id => $(id).addEventListener('click', () => { const s = renderer.xr.getSession(); if (s) s.end(); }));
+// taps on the controls must not count as AR "select" taps
+$('overlay').addEventListener('beforexrselect', e => e.preventDefault());
+
+/* ---------- session ---------- */
+async function startAR() {
+  const overlay = $('overlay');
+  try {
+    overlay.hidden = false;
+    const session = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test', 'dom-overlay'],
+      optionalFeatures: ['anchors'],
+      domOverlay: { root: overlay }
+    });
+    document.body.classList.add('in-ar');
+    session.addEventListener('end', () => {
+      hitSource = null; anchor = null; overlay.hidden = true;
+      document.body.classList.remove('in-ar'); resetRegistration();
+    });
+    await renderer.xr.setSession(session);
+    const viewer = await session.requestReferenceSpace('viewer');
+    hitSource = await session.requestHitTestSource({ space: viewer });
+    resetRegistration(); applyNudge();
+  } catch (e) {
+    overlay.hidden = true;
+    $('support').textContent = 'Could not start AR: ' + (e && e.message ? e.message : e);
+  }
+}
+$('start').addEventListener('click', startAR);
+
+(async () => {
+  refreshUI();
+  const sup = navigator.xr ? await navigator.xr.isSessionSupported('immersive-ar').catch(() => false) : false;
+  if (!sup) $('support').textContent = 'AR isn’t available in this browser. Open this page in Chrome on your Android phone.';
+  try { await loadModels(); }
+  catch (e) { $('start').textContent = 'Models failed to load'; $('support').textContent = String(e && e.message || e); return; }
+  $('start').textContent = 'Start AR';
+  $('start').disabled = !sup;
+})();
+</script>
+</body>
+</html>
