@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kitchen AR</title>
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+<style>
+  :root { --bg:#F3F1EA; --ink:#23281F; --muted:#6B7266; --sage:#8F9C84; --oak:#B98048; --card:#FFFFFF; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         padding:max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 24px max(16px, env(safe-area-inset-left)) }
+  h1 { font-size:22px; margin:4px 0 2px }
+  p { margin:0 0 12px; color:var(--muted); font-size:14px }
+  .tabs { display:flex; gap:6px; margin:10px 0 }
+  .tabs button { flex:1; font:600 15px system-ui, sans-serif; padding:10px 6px; border-radius:10px; border:2px solid var(--sage); background:var(--card); color:var(--ink) }
+  .tabs button[aria-pressed="true"] { background:var(--sage); color:#fff }
+  .desc { font-size:14px; color:var(--ink); min-height:40px; margin-bottom:8px }
+  model-viewer { width:100%; height:62vh; background:#E6E2D8; border-radius:14px; --poster-color:#E6E2D8 }
+  .ar { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); background:var(--oak); color:#fff; border:0;
+        font:700 17px system-ui, sans-serif; padding:14px 22px; border-radius:999px; box-shadow:0 4px 14px rgba(0,0,0,.25) }
+  .tips { margin-top:14px; font-size:14px; color:var(--muted) }
+  .tips li { margin-bottom:4px }
+  .scale { display:flex; gap:8px; align-items:center; font-size:14px; margin:8px 0 0 }
+</style>
+</head>
+<body>
+  <h1>Kitchen remodel in AR</h1>
+  <p>Pick a design, then tap “View in your kitchen.” Stand in the middle of the kitchen and point at the floor.</p>
+  <div class="tabs" role="group" aria-label="Design">
+    <button id="b-R4" aria-pressed="true">R4</button>
+    <button id="b-R2" aria-pressed="false">R2</button>
+    <button id="b-R3" aria-pressed="false">R3</button>
+  </div>
+  <div class="desc" id="desc"></div>
+  <model-viewer id="mv" src="R4_kitchen_AR_fullsize.glb" alt="3D model of the kitchen design"
+      ar ar-modes="webxr scene-viewer quick-look" ar-scale="fixed" ar-placement="floor"
+      camera-controls touch-action="pan-y" camera-orbit="-30deg 55deg auto" shadow-intensity="0.6" exposure="1.1">
+    <button slot="ar-button" class="ar">View in your kitchen</button>
+  </model-viewer>
+  <label class="scale"><input type="checkbox" id="resize"> Let me pinch to resize (off = true 1:1 size)</label>
+  <ul class="tips">
+    <li>Twist with two fingers to line the model’s walls up with your real walls.</li>
+    <li>If AR doesn’t start, install “Google Play Services for AR” from the Play Store.</li>
+    <li>You can also drag the 3D view above to look around without AR.</li>
+  </ul>
+<script>
+  const D = {
+    R4: 'Range on the south wall, counter-depth fridge in the old built-in corner, sink peninsula with a raised oak bar. Window untouched.',
+    R2: 'Deeper sink island with three counter stools; the wall behind the old built-in opens to the living room.',
+    R3: 'Sink peninsula with a raised oak bar and three bar stools; range on the window wall.'
+  };
+  const mv = document.getElementById('mv');
+  function pick(k){
+    mv.src = k + '_kitchen_AR_fullsize.glb';
+    document.getElementById('desc').textContent = k + ': ' + D[k];
+    ['R4','R2','R3'].forEach(x => document.getElementById('b-'+x).setAttribute('aria-pressed', x===k));
+  }
+  ['R4','R2','R3'].forEach(k => document.getElementById('b-'+k).addEventListener('click', () => pick(k)));
+  document.getElementById('resize').addEventListener('change', e => mv.setAttribute('ar-scale', e.target.checked ? 'auto' : 'fixed'));
+  pick('R4');
+</script>
+</body>
+</html>
