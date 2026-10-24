@@ -145,6 +145,7 @@
       <div id="offs"></div>
       <div class="row">
         <button id="changesBtn">Changes only</button>
+        <button id="realBtn">Real finishes</button>
       </div>
       <div id="legend" hidden><span class="sw" style="background:#7FB069"></span>new wall <span class="sw" style="background:#E0533D"></span>wall / built-in removed</div>
       <div class="row">
@@ -166,6 +167,8 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { XREstimatedLight } from 'three/addons/webxr/XREstimatedLight.js';
 
 /* ---------- model facts (from the GLBs: meters, Y up, origin = kitchen floor center, -Z = north, +X = east) ---------- */
 const IN = 0.0254;
@@ -200,6 +203,7 @@ const S = {
   floor: store.get('floor', false),
   dining: store.get('dining', false),
   changes: store.get('changes', false),   // "changes only": hide existing walls/floor/dining, show new (green) and removed (red) walls
+  real: store.get('real', true),          // realistic finishes (textures, reflections, shadows) vs. flat colors
   stepIdx: store.get('stepIdx', 1),
   phase: 'corner',                        // corner | wall | placed
   p1: null, floorY: null,
@@ -213,17 +217,50 @@ renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local');
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 50);
-scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8577, 2.2));
-const sun = new THREE.DirectionalLight(0xffffff, 1.3); sun.position.set(1, 3, 2); scene.add(sun);
 
 // placed (world pose of the corner, follows the AR anchor) -> nudge (user fine-tuning) -> modelRoot (shifts model so the corner is at 0)
 const placed = new THREE.Group(); placed.matrixAutoUpdate = false; placed.visible = false; scene.add(placed);
 const nudge = new THREE.Group(); placed.add(nudge);
 const modelRoot = new THREE.Group(); nudge.add(modelRoot);
+
+/* ---------- lighting ---------- */
+// Default: a neutral indoor reflection map + soft fill. When Chrome reports the room's real light, that takes over.
+const pmrem = new THREE.PMREMGenerator(renderer);
+const roomEnv = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+const hemi = new THREE.HemisphereLight(0xfffaf0, 0x8a8577, 0.6); scene.add(hemi);
+// Overhead key light that travels with the model and casts the contact shadows.
+const keyLight = new THREE.DirectionalLight(0xfff4e5, 1.6);
+keyLight.position.set(0.6, 4, 0.9); keyLight.target.position.set(0, 0, 0);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+Object.assign(keyLight.shadow.camera, { left: -3.2, right: 3.2, top: 3.2, bottom: -3.2, near: 0.5, far: 6 });
+keyLight.shadow.bias = -0.0005; keyLight.shadow.normalBias = 0.02; keyLight.shadow.radius = 4;
+modelRoot.add(keyLight, keyLight.target);
+// Invisible floor that only shows shadows, so cabinets and stools sit on your real floor.
+const shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 3.35).rotateX(-Math.PI / 2), new THREE.ShadowMaterial({ opacity: 0.32 }));
+shadowCatcher.position.set(0.005, 0.002, -0.003); shadowCatcher.receiveShadow = true; modelRoot.add(shadowCatcher);
+
+const xrLight = new XREstimatedLight(renderer, true);
+let estimating = false;
+xrLight.addEventListener('estimationstart', () => { estimating = true; scene.add(xrLight); applyLighting(); });
+xrLight.addEventListener('estimationend', () => { estimating = false; scene.remove(xrLight); applyLighting(); });
+function applyLighting() {
+  const real = S.real;
+  scene.environment = real ? (estimating && xrLight.environment ? xrLight.environment : roomEnv) : null;
+  hemi.intensity = real ? (estimating ? 0.15 : 0.6) : 2.2;
+  keyLight.intensity = real ? (estimating ? 0.7 : 1.6) : 1.3;
+  keyLight.castShadow = real;
+  shadowCatcher.visible = real && !S.floor;
+  renderer.toneMapping = real ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+}
 
 const reticle = new THREE.Mesh(new THREE.RingGeometry(0.03, 0.045, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
 reticle.add(new THREE.Mesh(new THREE.CircleGeometry(0.005, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff })));
@@ -238,6 +275,191 @@ function marker(color) {
 }
 const mark1 = marker(0xF2A36B), mark2 = marker(0x8FD3FF);
 
+/* ---------- realistic finishes (textures painted here at load, sized in real meters) ---------- */
+function rng(seed) { return () => { seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function makeNoise(seed, n = 512) {   // smooth value noise that repeats every (px, py) cells, so textures tile seamlessly
+  const r = rng(seed), g = new Float32Array(n * n); for (let i = 0; i < g.length; i++) g[i] = r();
+  return (x, y, px, py) => {
+    const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const X0 = ((xi % px) + px) % px, X1 = (X0 + 1) % px, Y0 = ((yi % py) + py) % py, Y1 = (Y0 + 1) % py;
+    const a = g[Y0 * n + X0], b = g[Y0 * n + X1], c = g[Y1 * n + X0], d = g[Y1 * n + X1];
+    return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+  };
+}
+function fbm(N, x, y, px, py, oct = 4) { let s = 0, a = 0.5, f = 1, t = 0; for (let o = 0; o < oct; o++) { s += a * N(x * f, y * f, px * f, py * f); t += a; a *= 0.5; f *= 2; } return s / t; }
+const mix = (a, b, t) => a + (b - a) * t;
+const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+
+// paints a color canvas and a height (bump) canvas in one pass; fn(u, v, out) fills out = [r, g, b, height] in 0..255
+function paint(w, h, fn) {
+  const cc = document.createElement('canvas'), hc = document.createElement('canvas'); cc.width = hc.width = w; cc.height = hc.height = h;
+  const cg = cc.getContext('2d'), hg = hc.getContext('2d'), ci = cg.createImageData(w, h), hi = hg.createImageData(w, h);
+  const out = [0, 0, 0, 128];
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    out[3] = 128; fn(i / w, j / h, out);
+    const k = (j * w + i) * 4;
+    ci.data[k] = out[0]; ci.data[k + 1] = out[1]; ci.data[k + 2] = out[2]; ci.data[k + 3] = 255;
+    hi.data[k] = hi.data[k + 1] = hi.data[k + 2] = out[3]; hi.data[k + 3] = 255;
+  }
+  cg.putImageData(ci, 0, 0); hg.putImageData(hi, 0, 0);
+  return { color: cc, height: hc };
+}
+function tex(canvas, sizeM, srgb) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(1 / sizeM[0], 1 / sizeM[1]);
+  t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  return t;
+}
+function pair(p, sizeM) { return { map: tex(p.color, sizeM, true), bump: tex(p.height, sizeM, false) }; }
+
+// white oak: straight grain, open pores; ph shifts the growth rings so neighboring boards differ
+function oakGrain(N, u, v, rings, ph) {
+  const warp = fbm(N[0], u * 2, v * 2, 2, 2, 3);                          // gentle drift: white oak is mostly straight-grained
+  const t = v * rings + warp * 2.2 + fbm(N[1], u * 6, v * 40, 6, 40, 2) * 0.35 + ph;
+  const ring = 0.5 + 0.5 * Math.sin(t * Math.PI * 2);
+  const line = Math.pow(ring, 10) * (0.55 + 0.45 * N[4](u * 8, v * 30, 8, 30)); // thin late-wood lines that fade in and out
+  const streak = fbm(N[5], u * 4, v * 160, 4, 160, 2) - 0.5;              // long tonal streaks along the board
+  const pore = Math.max(0, N[2](u * 48, v * 256, 48, 256) - 0.66) * 2.4;
+  const tone = fbm(N[3], u * 2, v * 3, 2, 3, 3);
+  return { line, pore, tone, streak };
+}
+const OAK = { base: [196, 167, 126], light: [214, 190, 150], dark: [156, 122, 84] };
+function oakColor(g, out, shade = 0) {
+  for (let c = 0; c < 3; c++) {
+    let v = mix(OAK.base[c], OAK.light[c], g.tone * 0.6);
+    v = mix(v, OAK.dark[c], 0.28 * g.line + 0.3 * g.pore);
+    out[c] = v * (1 + shade + g.streak * 0.12);
+  }
+  out[3] = 180 - 50 * g.line - 70 * g.pore;
+}
+
+let FIN = null;
+function buildFinishes() {
+  const N = [1, 2, 3, 4, 5, 6, 7, 8].map(s => makeNoise(s * 7919));
+
+  // cabinet / bar oak: 1.2 m along the grain x 0.3 m
+  const oak = pair(paint(1024, 256, (u, v, o) => oakColor(oakGrain(N, u, v, 24, 0), o)), [1.2, 0.3]);
+
+  // white-oak plank floor: 5" boards, staggered butt joints, 5 ft x 5 rows per tile
+  const rows = 5, R = rng(42), seams = [...Array(rows)].map(() => [R(), 0.35 + R() * 0.3, R(), R(), R(), R()]);
+  const floor = pair(paint(2048, 854, (u, v, o) => {
+    const r = Math.min(rows - 1, Math.floor(v * rows)), lv = v * rows - r, s = seams[r];
+    const lu = ((u - s[0]) % 1 + 1) % 1, second = lu > s[1];
+    const shade = ((second ? s[2] : s[3]) - 0.5) * 0.16;
+    oakColor(oakGrain(N, u, v * 0.6 + r * 0.17, 30, second ? s[4] * 5 : s[5] * 5), o, shade);
+    const du = Math.min(lu, Math.abs(lu - s[1]), 1 - lu) * 2048, dv = Math.min(lv, 1 - lv) * (854 / rows);
+    if (du < 1.6 || dv < 1.6) { o[0] *= 0.55; o[1] *= 0.55; o[2] *= 0.55; o[3] = 20; }
+    else if (du < 3.5 || dv < 3.5) { o[3] *= 0.7; }
+  }), [1.524, 0.635]);
+
+  // honed white quartz: soft gray veining and fine speckle, 1 m tile
+  const R2 = rng(7);
+  const quartz = pair(paint(1024, 1024, (u, v, o) => {
+    const a = 1 - Math.abs(2 * fbm(N[4], u * 4, v * 4, 4, 4, 5) - 1), b = 1 - Math.abs(2 * fbm(N[5], u * 3, v * 3, 3, 3, 5) - 1);
+    const vein = Math.pow(a, 40) * 0.4 + Math.pow(b, 70) * 0.22;           // faint, sparse veins: honed quartz, not marble
+    const cloud = fbm(N[6], u * 6, v * 6, 6, 6, 3) * 0.035;
+    const speck = R2() > 0.994 ? 0.12 : 0;
+    const base = [238, 235, 228], vc = [188, 185, 178];
+    for (let c = 0; c < 3; c++) o[c] = mix(base[c], vc[c], clamp01(vein + speck)) * (0.98 + cloud);
+    o[3] = 128;
+  }), [1, 1]);
+
+  // whitewashed brick, running bond: 7-5/8" x 2-1/4" bricks, 3/8" joints; tile = 4 bricks x 8 courses
+  const R3 = rng(99), bricks = [...Array(64)].map(() => [R3(), R3(), R3()]);
+  const brick = pair(paint(1024, 672, (u, v, o) => {
+    const course = Math.min(7, Math.floor(v * 8)), bx = u * 4 + (course % 2) * 0.5, col = Math.floor(bx) % 4;
+    const lu = bx - Math.floor(bx), lv = v * 8 - course, b = bricks[course * 8 + col];
+    const mortar = lu > 7.625 / 8 || lv > 2.25 / 2.625;
+    const wash = clamp01(0.48 + 0.9 * (fbm(N[7], u * 8, v * 8, 8, 8, 4) - 0.5) + 0.25 + (b[1] - 0.5) * 0.35);  // mostly white, brick showing through in patches
+    const tex = fbm(N[0], u * 64, v * 64, 64, 64, 2);
+    const red = [146 + b[0] * 30, 92 + b[0] * 18, 74 + b[2] * 14], white = [238, 234, 226];
+    if (mortar) { for (let c = 0; c < 3; c++) o[c] = mix(white[c], 205, 0.3) * (0.95 + tex * 0.08); o[3] = 60; }
+    else {
+      for (let c = 0; c < 3; c++) o[c] = mix(red[c], white[c], wash) * (0.92 + tex * 0.14);
+      const edge = Math.min(lu, 7.625 / 8 - lu, lv, 2.25 / 2.625 - lv) * 40;
+      o[3] = 150 + 70 * clamp01(edge) + tex * 30;
+    }
+  }), [0.8128, 0.5334]);
+
+  // lime plaster for the hood: mottled warm white, troweled
+  const plaster = pair(paint(1024, 1024, (u, v, o) => {
+    const m = fbm(N[1], u * 6, v * 6, 6, 6, 5), tr = fbm(N[2], u * 3, v * 12, 3, 12, 3);
+    const base = [234, 228, 216];
+    for (let c = 0; c < 3; c++) o[c] = base[c] * (0.89 + 0.11 * m + 0.04 * tr);
+    o[3] = 90 + 120 * m;
+  }), [1, 1]);
+
+  // painted cabinet surface: very subtle orange-peel for the bump only
+  const paintBump = pair(paint(256, 256, (u, v, o) => { const m = fbm(N[3], u * 16, v * 16, 16, 16, 3); o[0] = o[1] = o[2] = 255; o[3] = 100 + 60 * m; }), [0.25, 0.25]);
+
+  // brushed stainless
+  const steel = pair(paint(512, 512, (u, v, o) => {
+    const s = fbm(N[4], u * 2, v * 256, 2, 256, 2);
+    o[0] = o[1] = o[2] = 192 + 28 * s; o[2] += 4; o[3] = 128 + 30 * s;
+  }), [0.5, 0.5]);
+
+  // existing-style backsplash: 6" cream glazed squares, 1/8" grout
+  const R4 = rng(5), tiles = [...Array(16)].map(() => R4());
+  const tile = pair(paint(512, 512, (u, v, o) => {
+    const tx = Math.floor(u * 4), ty = Math.floor(v * 4), lu = u * 4 - tx, lv = v * 4 - ty;
+    const grout = Math.min(lu, 1 - lu, lv, 1 - lv) * 128 < 1.4;
+    const t = tiles[ty * 4 + tx], w = fbm(N[5], u * 16, v * 16, 16, 16, 3);
+    const c0 = grout ? [200, 196, 188] : [228 + t * 10, 219 + t * 9, 200 + t * 8];
+    for (let c = 0; c < 3; c++) o[c] = c0[c] * (grout ? 1 : 0.97 + w * 0.05);
+    o[3] = grout ? 40 : 170 + w * 30;
+  }), [0.6096, 0.6096]);
+
+  // neutral wood figure, tinted by each part's own color (stools, existing table and chairs)
+  const grain = pair(paint(512, 128, (u, v, o) => {
+    const g = oakGrain(N, u, v, 18, 1.3); const k = 255 * (0.82 + 0.18 * g.tone - 0.22 * g.line - 0.12 * g.pore);
+    o[0] = o[1] = o[2] = k; o[3] = 190 - 70 * g.line - 80 * g.pore;
+  }), [1.0, 0.25]);
+
+  const std = (p) => new THREE.MeshStandardMaterial(p);
+  FIN = {
+    wood:      () => std({ map: oak.map, bumpMap: oak.bump, bumpScale: 0.5, roughness: 0.55 }),
+    island:    () => std({ map: oak.map, bumpMap: oak.bump, bumpScale: 0.5, roughness: 0.6 }),
+    floor:     () => std({ map: floor.map, bumpMap: floor.bump, bumpScale: 0.6, roughness: 0.5 }),
+    top:       () => std({ map: quartz.map, roughness: 0.42 }),
+    brick:     () => std({ map: brick.map, bumpMap: brick.bump, bumpScale: 1.2, roughness: 0.92 }),
+    hood:      () => std({ map: plaster.map, bumpMap: plaster.bump, bumpScale: 0.6, roughness: 0.88 }),
+    exSplash:  () => std({ map: tile.map, bumpMap: tile.bump, bumpScale: 0.6, roughness: 0.22 }),
+    steel:     () => std({ map: steel.map, bumpMap: steel.bump, bumpScale: 0.15, color: 0xffffff, metalness: 1, roughness: 0.3 }),
+    hw:        () => std({ color: 0xB4935C, metalness: 1, roughness: 0.38 }),
+    black:     () => std({ color: 0x141414, metalness: 0.2, roughness: 0.18 }),
+    shade:     () => std({ color: 0x1c1c1c, metalness: 0.6, roughness: 0.45 }),
+    cord:      () => std({ color: 0x111111, roughness: 0.7 }),
+    perim:     (flat) => std({ color: flat.color.clone(), bumpMap: paintBump.bump, bumpScale: 0.25, roughness: 0.6 }),
+    wall:      (flat) => std({ color: flat.color.clone(), roughness: 0.92 }),
+    tinted:    (flat) => std({ color: flat.color.clone().multiplyScalar(1.25), map: grain.map, bumpMap: grain.bump, bumpScale: 0.4, roughness: 0.6 })
+  };
+  FIN.stoolseat = FIN.table = FIN.chair = FIN.tinted;
+}
+
+// texture coordinates in real meters, projected per box face: grain runs along each piece's long side, bricks/tiles stay level
+function boxUVs(geo) {
+  const pos = geo.attributes.position, nor = geo.attributes.normal; if (!nor) return;
+  const n = pos.count, uv = new Float32Array(n * 2), step = n % 24 === 0 ? 24 : n;
+  for (let s = 0; s < n; s += step) {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = s; i < s + step; i++) { const x = pos.getX(i), z = pos.getZ(i); x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+    const longX = (x1 - x0) >= (z1 - z0);
+    for (let i = s; i < s + step; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const ax = Math.abs(nor.getX(i)), ay = Math.abs(nor.getY(i)), az = Math.abs(nor.getZ(i));
+      let u, v;
+      if (ay >= ax && ay >= az) { u = longX ? x : z; v = longX ? z : x; }
+      else if (ax >= az) { u = z; v = y; }
+      else { u = x; v = y; }
+      uv[i * 2] = u; uv[i * 2 + 1] = v;
+    }
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+function meshKey(o, root) { for (let n = o; n && n !== root; n = n.parent) if (FIN[n.name]) return n.name; return null; }
+
 /* ---------- models ---------- */
 const models = {};
 function partOf(o, root) {
@@ -246,6 +468,10 @@ function partOf(o, root) {
   return 'kitchen';
 }
 async function loadModels() {
+  $('start').textContent = 'Preparing finishes…';
+  await new Promise(r => setTimeout(r, 30));   // let the label paint before the texture work
+  buildFinishes();
+  $('start').textContent = 'Loading models…';
   const loader = new GLTFLoader();
   await Promise.all(Object.keys(LAYOUTS).map(k => loader.loadAsync(`${k}_kitchen_AR_fullsize.glb`).then(g => {
     const root = g.scene;
@@ -253,6 +479,13 @@ async function loadModels() {
       if (!o.isMesh) return;
       o.material = Array.isArray(o.material) ? o.material.map(m => m.clone()) : o.material.clone();
       o.userData.part = partOf(o, root);
+      o.userData.flat = o.material;
+      const key = Array.isArray(o.material) ? null : meshKey(o, root);
+      if (key) { boxUVs(o.geometry); o.userData.real = FIN[key](o.material); }
+      else o.userData.real = o.material;
+      const p = o.userData.part;
+      o.castShadow = p === 'kitchen' || p === 'dining';
+      o.receiveShadow = true;
     });
     modelRoot.add(root); models[k] = root;
   })));
@@ -282,6 +515,8 @@ function buildChangeLayers() {
 
 function applyLook() {
   for (const [k, g] of Object.entries(changeLayers)) g.visible = S.changes && k === S.layout;
+  applyLighting();
+  for (const root of Object.values(models)) root.traverse(o => { if (o.isMesh && o.userData.flat) o.material = S.real ? o.userData.real : o.userData.flat; });
   for (const [k, root] of Object.entries(models)) {
     root.visible = k === S.layout;
     root.traverse(o => {
@@ -457,6 +692,7 @@ function refreshUI() {
   $('stepBtn').firstChild.textContent = STEPS[S.stepIdx].label;
   $('wallsBtn').textContent = 'Walls: ' + S.walls;
   $('changesBtn').setAttribute('aria-pressed', S.changes);
+  $('realBtn').setAttribute('aria-pressed', S.real);
   $('legend').hidden = !S.changes;
   ['wallsBtn', 'diningBtn'].forEach(id => $(id).disabled = S.changes);
   $('floorBtn').setAttribute('aria-pressed', S.floor);
@@ -493,6 +729,7 @@ document.querySelectorAll('.pad [data-n]').forEach(b => b.addEventListener('clic
 $('stepBtn').addEventListener('click', () => { S.stepIdx = (S.stepIdx + 1) % STEPS.length; store.set('stepIdx', S.stepIdx); refreshUI(); });
 $('zeroBtn').addEventListener('click', () => { S.off = { e: 0, n: 0, up: 0, rot: 0 }; applyNudge(); });
 $('wallsBtn').addEventListener('click', () => { S.walls = { off: 'ghost', ghost: 'solid', solid: 'off' }[S.walls]; store.set('walls', S.walls); applyLook(); refreshUI(); });
+$('realBtn').addEventListener('click', () => { S.real = !S.real; store.set('real', S.real); applyLook(); refreshUI(); });
 $('changesBtn').addEventListener('click', () => { S.changes = !S.changes; store.set('changes', S.changes); applyLook(); refreshUI(); });
 $('floorBtn').addEventListener('click', () => { S.floor = !S.floor; store.set('floor', S.floor); applyLook(); refreshUI(); });
 $('diningBtn').addEventListener('click', () => { S.dining = !S.dining; store.set('dining', S.dining); applyLook(); refreshUI(); });
@@ -510,7 +747,7 @@ async function startAR() {
     overlay.hidden = false;
     const session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test', 'dom-overlay'],
-      optionalFeatures: ['anchors'],
+      optionalFeatures: ['anchors', 'light-estimation'],
       domOverlay: { root: overlay }
     });
     document.body.classList.add('in-ar');
